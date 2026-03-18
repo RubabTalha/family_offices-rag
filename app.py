@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import chromadb
 from sentence_transformers import SentenceTransformer
-import openai
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
@@ -194,9 +193,10 @@ if 'df' not in st.session_state:
     try:
         st.session_state.df = pd.read_csv('family_offices.csv')
         st.session_state.data_loaded = True
-    except:
+    except Exception as e:
         st.session_state.df = None
         st.session_state.data_loaded = False
+        st.error(f"Error loading CSV: {e}")
 
 # ============================================
 # Header
@@ -213,7 +213,7 @@ with col2:
     """, unsafe_allow_html=True)
 
 # ============================================
-# Load RAG System with Caching - FIXED VERSION
+# Load RAG System with Caching
 # ============================================
 @st.cache_resource
 def load_rag_system():
@@ -231,8 +231,9 @@ def load_rag_system():
                     collection = client.get_collection("family_offices")
                     # Test if collection works
                     collection.count()
-                except:
-                    st.warning("⚠️ Vector database needs to be recreated locally. Using pandas search fallback.")
+                    st.success("✅ RAG system loaded successfully!")
+                except Exception as e:
+                    st.warning(f"⚠️ Vector database issue: {e}. Using pandas search fallback.")
                     collection = None
             except Exception as e:
                 st.warning(f"⚠️ ChromaDB error: {e}. Using pandas search fallback.")
@@ -250,63 +251,107 @@ def load_rag_system():
 model, collection, df = load_rag_system()
 
 # ============================================
-# Fallback Search Function (Uses pandas if ChromaDB fails)
+# Improved Fallback Search Function
 # ============================================
 def pandas_search(query_text, df, country=None, fo_type=None):
-    """Simple pandas-based search as fallback"""
-    if df is None:
+    """Improved pandas-based search with better matching"""
+    if df is None or len(df) == 0:
         return []
     
-    query_text = query_text.lower()
+    query_text = query_text.lower().strip()
     results = []
+    
+    # Split query into keywords for better matching
+    keywords = [k for k in query_text.split() if len(k) > 2]  # Remove short words
     
     for idx, row in df.iterrows():
         score = 0
-        # Search in multiple columns
-        searchable_text = f"""
-        {row.get('FO Firm Name', '')} 
-        {row.get('Country', '')} 
-        {row.get('Investment Focus', '')} 
-        {row.get('Recent Deal 1', '')} 
-        {row.get('Recent Deal 2', '')} 
-        {row.get('Recent Deal 3', '')}
-        """.lower()
+        matches = []
         
-        if query_text in searchable_text:
-            score += 1
+        # Create searchable text from multiple columns (all lowercase)
+        search_fields = {
+            'firm_name': str(row.get('FO Firm Name', '')).lower(),
+            'country': str(row.get('Country', '')).lower(),
+            'city': str(row.get('City', '')).lower(),
+            'investment_focus': str(row.get('Investment Focus', '')).lower(),
+            'recent_deal_1': str(row.get('Recent Deal 1', '')).lower(),
+            'recent_deal_2': str(row.get('Recent Deal 2', '')).lower(),
+            'recent_deal_3': str(row.get('Recent Deal 3', '')).lower(),
+            'contact_name': str(row.get('Contact Name', '')).lower(),
+            'contact_title': str(row.get('Contact Title', '')).lower(),
+            'notes': str(row.get('Notes', '')).lower()
+        }
+        
+        # Check for exact phrase match first (higher score)
+        if query_text in search_fields['firm_name'] or query_text in search_fields['notes']:
+            score += 5
+        
+        # Check for "decision maker" related queries
+        if 'decision' in query_text or 'maker' in query_text or 'who' in query_text:
+            if search_fields['contact_name'] and search_fields['contact_name'] != 'nan':
+                score += 3
+                matches.append('has_contact')
+        
+        # Check for location queries
+        if 'singapore' in query_text and search_fields['country'] == 'singapore':
+            score += 10
+            matches.append('singapore')
+        
+        if 'europe' in query_text and search_fields['country'] in ['uk', 'germany', 'france', 'switzerland', 'denmark', 'sweden']:
+            score += 5
+            matches.append('europe')
+        
+        # Then check individual keywords
+        for keyword in keywords:
+            for field_name, field_value in search_fields.items():
+                if keyword in field_value:
+                    score += 1
+                    matches.append(f"{field_name}:{keyword}")
         
         # Apply filters
         if country and country != 'All':
-            if str(row.get('Country', '')).lower() != country.lower():
+            if search_fields['country'] != country.lower():
                 score = 0
         
         if fo_type and fo_type != 'All':
-            if str(row.get('Type', '')).lower() != fo_type.lower():
+            type_value = str(row.get('Type', '')).lower()
+            if type_value != fo_type.lower():
                 score = 0
         
         if score > 0:
+            # Create rich result text
+            result_text = f"""
+🏢 **{row.get('FO Firm Name', 'N/A')}**
+📍 **Location:** {row.get('Country', 'N/A')}, {row.get('City', 'N/A')}
+👤 **Decision Maker:** {row.get('Contact Name', 'Not available')} - {row.get('Contact Title', 'N/A')}
+📧 **Contact:** {row.get('Contact Email', 'Not available')}
+🔗 **LinkedIn:** {row.get('Contact LinkedIn', 'Not available')}
+💰 **Investment Focus:** {row.get('Investment Focus', 'N/A')}
+💵 **Check Size:** ${row.get('Check Size Min', 'N/A')} - ${row.get('Check Size Max', 'N/A')}M
+📊 **Type:** {row.get('Type', 'N/A')}
+🤝 **Recent Deal:** {row.get('Recent Deal 1', 'N/A')}
+📝 **Notes:** {row.get('Notes', 'N/A')[:200]}...
+"""
+            
             results.append({
+                'score': score,
                 'firm_name': row.get('FO Firm Name', 'N/A'),
                 'country': row.get('Country', 'N/A'),
+                'city': row.get('City', 'N/A'),
+                'contact_name': row.get('Contact Name', 'N/A'),
+                'contact_title': row.get('Contact Title', 'N/A'),
+                'contact_email': row.get('Contact Email', 'N/A'),
                 'investment_focus': row.get('Investment Focus', 'N/A'),
-                'check_min': row.get('Check Size Min', 'N/A'),
-                'check_max': row.get('Check Size Max', 'N/A'),
-                'recent_deal': row.get('Recent Deal 1', 'N/A'),
-                'text': f"""
-Family Office: {row.get('FO Firm Name', 'N/A')}
-Location: {row.get('Country', 'N/A')}, {row.get('City', 'N/A')}
-Type: {row.get('Type', 'N/A')}
-Investment Focus: {row.get('Investment Focus', 'N/A')}
-Check Size: ${row.get('Check Size Min', 'N/A')} - ${row.get('Check Size Max', 'N/A')}
-Recent Deal: {row.get('Recent Deal 1', 'N/A')}
-Contact: {row.get('Contact Name', 'N/A')} - {row.get('Contact Title', 'N/A')}
-"""
+                'text': result_text,
+                'match_count': len(matches)
             })
     
-    return results[:10]
+    # Sort by score (highest first)
+    results.sort(key=lambda x: x['score'], reverse=True)
+    return results[:15]  # Return top 15
 
 # ============================================
-# Confidence Score Function - FIXED
+# Confidence Score Function
 # ============================================
 def calculate_confidence(results, method="rag"):
     """Calculate confidence based on results"""
@@ -323,8 +368,12 @@ def calculate_confidence(results, method="rag"):
         else:
             confidence = 0.5
     else:
-        # Pandas-based confidence (default to medium)
-        confidence = 0.6
+        # Pandas-based confidence based on score distribution
+        if isinstance(results, list) and len(results) > 0:
+            avg_score = sum([r.get('score', 0) for r in results]) / len(results)
+            confidence = min(avg_score / 20, 0.9)  # Normalize to 0-0.9 range
+        else:
+            confidence = 0.5
     
     if confidence > 0.7:
         return confidence, "high"
@@ -334,7 +383,7 @@ def calculate_confidence(results, method="rag"):
         return confidence, "low"
 
 # ============================================
-# RAG Search Function - FIXED for compatibility
+# RAG Search Function
 # ============================================
 def rag_search(query_text, top_k=10, country=None, fo_type=None):
     if model is None or collection is None:
@@ -394,7 +443,7 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     
-    if df is not None:
+    if df is not None and st.session_state.data_loaded:
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"""
@@ -440,6 +489,8 @@ with st.sidebar:
                 if st.button(f"🔍 {q}", key=f"hist_{q}"):
                     st.session_state.example_query = q
                     st.rerun()
+    else:
+        st.error("❌ Dataset not loaded. Please check family_offices.csv")
 
 # ============================================
 # Main Tabs
@@ -473,14 +524,16 @@ with tab1:
         "Show family offices in Europe",
         "Recent climate tech deals",
         "Healthcare investors with $10M+ checks",
-        "Singapore family offices",
-        "Co-investors with Sequoia"
+        "Who are decision makers in Singapore",
+        "Co-investors with Sequoia",
+        "Family offices in Germany",
+        "Contact information for VMS Group"
     ]
     
-    cols = st.columns(3)
+    cols = st.columns(4)
     for i, ex in enumerate(examples):
-        with cols[i % 3]:
-            if st.button(f"🔍 {ex}", key=f"ex_{i}", use_container_width=True):
+        with cols[i % 4]:
+            if st.button(f"🔍 {ex[:15]}...", key=f"ex_{i}", help=ex, use_container_width=True):
                 query = ex
                 st.rerun()
     
@@ -498,19 +551,21 @@ with tab1:
         
         # Show user message
         with st.chat_message("user"):
-            st.markdown(query)
+            st.markdown(f"**You:** {query}")
         
         # Search
         with st.spinner("🔍 Searching..."):
             # Try RAG first, fallback to pandas
             rag_results = rag_search(query, top_k=top_k, country=selected_country, fo_type=selected_type)
             
-            if rag_results and rag_results.get('documents'):
+            if rag_results and rag_results.get('documents') and len(rag_results['documents']) > 0:
                 results = rag_results
                 search_method = "rag"
+                st.success("✅ Using RAG semantic search")
             else:
                 results = pandas_search(query, df, country=selected_country, fo_type=selected_type)
                 search_method = "pandas"
+                st.info("📊 Using enhanced keyword search")
         
         # Calculate confidence
         confidence_score, confidence_level = calculate_confidence(results, search_method)
@@ -527,30 +582,42 @@ with tab1:
                     st.markdown(f'<span class="confidence-low">⚠️ Low Confidence ({confidence_score:.1%})</span>', unsafe_allow_html=True)
                 
                 if search_method == "rag":
-                    st.markdown("### 📊 Found these family offices (RAG search):")
-                    for i, (doc, metadata) in enumerate(zip(results['documents'][:5], results['metadatas'][:5])):
+                    st.markdown(f"### 📊 Found {len(results['documents'])} family offices")
+                    for i, (doc, metadata) in enumerate(zip(results['documents'][:7], results['metadatas'][:7])):
                         firm_name = metadata.get('firm_name', 'Family Office')
                         with st.expander(f"🏦 **{firm_name}**", expanded=i==0):
                             st.markdown(doc)
-                            if st.button("⭐ Save", key=f"fav_{i}_{firm_name}"):
-                                st.session_state.favorites.append({
-                                    'name': firm_name,
-                                    'text': doc[:200] + '...',
-                                    'query': query
-                                })
-                                st.success("Saved!")
+                            col1, col2 = st.columns([4, 1])
+                            with col2:
+                                if st.button("⭐ Save", key=f"fav_rag_{i}_{firm_name}"):
+                                    st.session_state.favorites.append({
+                                        'name': firm_name,
+                                        'text': doc[:200] + '...',
+                                        'query': query
+                                    })
+                                    st.success("Saved!")
                 else:
-                    st.markdown("### 📊 Found these family offices (quick search):")
-                    for i, result in enumerate(results[:5]):
-                        with st.expander(f"🏦 **{result['firm_name']}**", expanded=i==0):
-                            st.markdown(result['text'])
-                            if st.button("⭐ Save", key=f"fav_{i}_{result['firm_name']}"):
-                                st.session_state.favorites.append({
-                                    'name': result['firm_name'],
-                                    'text': result['text'][:200] + '...',
-                                    'query': query
-                                })
-                                st.success("Saved!")
+                    st.markdown(f"### 📊 Found {len(results)} family offices")
+                    for i, result in enumerate(results[:7]):
+                        with st.expander(f"🏦 **{result['firm_name']}** (Match score: {result['score']})", expanded=i==0):
+                            col1, col2 = st.columns([4, 1])
+                            with col1:
+                                st.markdown(result['text'])
+                            with col2:
+                                st.markdown("**Quick Actions:**")
+                                if st.button("⭐ Save", key=f"fav_pandas_{i}_{result['firm_name']}"):
+                                    st.session_state.favorites.append({
+                                        'name': result['firm_name'],
+                                        'text': f"{result['firm_name']} - {result.get('contact_name', 'N/A')} ({result['country']})",
+                                        'query': query
+                                    })
+                                    st.success("Saved!")
+                                
+                                if result.get('contact_name') and result['contact_name'] != 'N/A' and result['contact_name'] != 'nan':
+                                    st.info(f"👤 {result['contact_name']}")
+                                
+                                if result.get('contact_email') and result['contact_email'] != 'N/A' and result['contact_email'] != 'nan':
+                                    st.caption(f"📧 {result['contact_email']}")
             else:
                 st.markdown("""
                 <div class="warning-box">
@@ -564,7 +631,7 @@ with tab1:
 with tab2:
     st.markdown("## 📊 Dataset Analytics")
     
-    if df is not None:
+    if df is not None and st.session_state.data_loaded:
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.markdown(f"""
@@ -619,12 +686,13 @@ with tab2:
                     x=country_counts.values,
                     y=country_counts.index,
                     orientation='h',
+                    title="Number of Family Offices by Country",
                     color=country_counts.values,
                     color_continuous_scale=['#e6d5ff', '#8a2be2']
                 )
                 fig.update_layout(
                     height=400,
-                    xaxis_title="Number of Family Offices",
+                    xaxis_title="Count",
                     yaxis_title="",
                     paper_bgcolor='rgba(0,0,0,0)',
                     plot_bgcolor='rgba(0,0,0,0)'
@@ -638,10 +706,32 @@ with tab2:
                 fig = px.pie(
                     values=type_counts.values,
                     names=type_counts.index,
+                    title="SFO vs MFO Distribution",
                     color_discrete_sequence=['#8a2be2', '#b16eff', '#d9b0ff']
                 )
                 fig.update_layout(height=400)
                 st.plotly_chart(fig, use_container_width=True)
+        
+        # Investment Focus Analysis
+        if 'Investment Focus' in df.columns:
+            st.markdown("### 🎯 Top Investment Focus Areas")
+            all_focuses = []
+            for focus in df['Investment Focus'].dropna():
+                for f in str(focus).split(','):
+                    all_focuses.append(f.strip())
+            
+            focus_counts = pd.Series(all_focuses).value_counts().head(15)
+            fig = px.bar(
+                x=focus_counts.values,
+                y=focus_counts.index,
+                orientation='h',
+                color=focus_counts.values,
+                color_continuous_scale=['#e6d5ff', '#8a2be2']
+            )
+            fig.update_layout(height=500)
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.error("❌ Dataset not available for analytics")
 
 # ============================================
 # Tab 3: Favorites
@@ -675,7 +765,7 @@ with tab3:
 # ============================================
 st.markdown("""
 <div class="footer">
-    <p>Powered by ChromaDB + Sentence Transformers | Fallback: Pandas Search</p>
-    <p style="font-size: 0.8em;">388 family offices • 27 data points</p>
+    <p>Powered by ChromaDB + Sentence Transformers | Fallback: Enhanced Keyword Search</p>
+    <p style="font-size: 0.8em;">388 family offices • 27 data points • Updated March 2026</p>
 </div>
 """, unsafe_allow_html=True)
