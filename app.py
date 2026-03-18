@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import time
 import os
+import numpy as np
 
 # Page config MUST be first command
 st.set_page_config(
@@ -233,10 +234,10 @@ def load_rag_system():
                     collection.count()
                     st.success("✅ RAG system loaded successfully!")
                 except Exception as e:
-                    st.warning(f"⚠️ Vector database issue: {e}. Using pandas search fallback.")
+                    st.warning(f"⚠️ Vector database issue: {e}. Using enhanced keyword search fallback.")
                     collection = None
             except Exception as e:
-                st.warning(f"⚠️ ChromaDB error: {e}. Using pandas search fallback.")
+                st.warning(f"⚠️ ChromaDB error: {e}. Using enhanced keyword search fallback.")
                 collection = None
             
             # Load CSV for metadata
@@ -251,10 +252,34 @@ def load_rag_system():
 model, collection, df = load_rag_system()
 
 # ============================================
-# Improved Fallback Search Function
+# Helper Functions for Safe String Handling
+# ============================================
+def safe_str(val):
+    """Convert any value to lowercase string safely"""
+    if pd.isna(val) or val is None:
+        return ''
+    return str(val).lower()
+
+def safe_str_display(val, default='N/A'):
+    """Convert any value to display string safely"""
+    if pd.isna(val) or val is None:
+        return default
+    return str(val)
+
+def safe_int(val, default=0):
+    """Convert any value to int safely"""
+    if pd.isna(val) or val is None:
+        return default
+    try:
+        return int(float(val))
+    except:
+        return default
+
+# ============================================
+# Improved Fallback Search Function - FULLY FIXED
 # ============================================
 def pandas_search(query_text, df, country=None, fo_type=None):
-    """Improved pandas-based search with better matching"""
+    """Improved pandas-based search with better matching and safe string handling"""
     if df is None or len(df) == 0:
         return []
     
@@ -268,80 +293,111 @@ def pandas_search(query_text, df, country=None, fo_type=None):
         score = 0
         matches = []
         
-        # Create searchable text from multiple columns (all lowercase)
-        search_fields = {
-            'firm_name': str(row.get('FO Firm Name', '')).lower(),
-            'country': str(row.get('Country', '')).lower(),
-            'city': str(row.get('City', '')).lower(),
-            'investment_focus': str(row.get('Investment Focus', '')).lower(),
-            'recent_deal_1': str(row.get('Recent Deal 1', '')).lower(),
-            'recent_deal_2': str(row.get('Recent Deal 2', '')).lower(),
-            'recent_deal_3': str(row.get('Recent Deal 3', '')).lower(),
-            'contact_name': str(row.get('Contact Name', '')).lower(),
-            'contact_title': str(row.get('Contact Title', '')).lower(),
-            'notes': str(row.get('Notes', '')).lower()
-        }
+        # Get values safely using helper functions
+        firm_name = safe_str(row.get('FO Firm Name'))
+        country_val = safe_str(row.get('Country'))
+        city_val = safe_str(row.get('City'))
+        investment_focus = safe_str(row.get('Investment Focus'))
+        recent_deal_1 = safe_str(row.get('Recent Deal 1'))
+        recent_deal_2 = safe_str(row.get('Recent Deal 2'))
+        recent_deal_3 = safe_str(row.get('Recent Deal 3'))
+        contact_name = safe_str(row.get('Contact Name'))
+        contact_title = safe_str(row.get('Contact Title'))
+        notes_val = safe_str(row.get('Notes'))
         
         # Check for exact phrase match first (higher score)
-        if query_text in search_fields['firm_name'] or query_text in search_fields['notes']:
+        if query_text in firm_name or query_text in notes_val:
             score += 5
         
         # Check for "decision maker" related queries
-        if 'decision' in query_text or 'maker' in query_text or 'who' in query_text:
-            if search_fields['contact_name'] and search_fields['contact_name'] != 'nan':
+        if any(word in query_text for word in ['decision', 'maker', 'who', 'contact', 'run', 'runs']):
+            if contact_name and contact_name != '':
                 score += 3
                 matches.append('has_contact')
         
         # Check for location queries
-        if 'singapore' in query_text and search_fields['country'] == 'singapore':
+        if 'singapore' in query_text and country_val == 'singapore':
             score += 10
             matches.append('singapore')
         
-        if 'europe' in query_text and search_fields['country'] in ['uk', 'germany', 'france', 'switzerland', 'denmark', 'sweden']:
+        if 'europe' in query_text and country_val in ['uk', 'germany', 'france', 'switzerland', 'denmark', 'sweden', 'italy', 'spain', 'netherlands']:
             score += 5
             matches.append('europe')
         
+        if 'asia' in query_text and country_val in ['singapore', 'hong kong', 'china', 'japan', 'korea', 'india']:
+            score += 5
+            matches.append('asia')
+        
+        if 'usa' in query_text or 'us' in query_text or 'america' in query_text:
+            if country_val in ['usa', 'united states', 'us']:
+                score += 5
+                matches.append('usa')
+        
         # Then check individual keywords
         for keyword in keywords:
-            for field_name, field_value in search_fields.items():
+            searchable_fields = [
+                firm_name, country_val, city_val, investment_focus,
+                recent_deal_1, recent_deal_2, recent_deal_3,
+                contact_name, contact_title, notes_val
+            ]
+            for field_value in searchable_fields:
                 if keyword in field_value:
                     score += 1
-                    matches.append(f"{field_name}:{keyword}")
+                    matches.append(keyword)
         
         # Apply filters
         if country and country != 'All':
-            if search_fields['country'] != country.lower():
+            if country_val != country.lower():
                 score = 0
         
         if fo_type and fo_type != 'All':
-            type_value = str(row.get('Type', '')).lower()
-            if type_value != fo_type.lower():
+            type_val = safe_str(row.get('Type'))
+            if type_val != fo_type.lower():
                 score = 0
         
         if score > 0:
+            # Get display values safely
+            display_firm = safe_str_display(row.get('FO Firm Name'))
+            display_country = safe_str_display(row.get('Country'))
+            display_city = safe_str_display(row.get('City'))
+            display_contact = safe_str_display(row.get('Contact Name'))
+            display_title = safe_str_display(row.get('Contact Title'))
+            display_email = safe_str_display(row.get('Contact Email'))
+            display_linkedin = safe_str_display(row.get('Contact LinkedIn'))
+            display_focus = safe_str_display(row.get('Investment Focus'))
+            display_check_min = safe_str_display(row.get('Check Size Min'))
+            display_check_max = safe_str_display(row.get('Check Size Max'))
+            display_type = safe_str_display(row.get('Type'))
+            display_deal = safe_str_display(row.get('Recent Deal 1'))
+            display_notes = safe_str_display(row.get('Notes'))
+            
+            # Truncate notes if too long
+            if len(display_notes) > 200:
+                display_notes = display_notes[:200] + '...'
+            
             # Create rich result text
             result_text = f"""
-🏢 **{row.get('FO Firm Name', 'N/A')}**
-📍 **Location:** {row.get('Country', 'N/A')}, {row.get('City', 'N/A')}
-👤 **Decision Maker:** {row.get('Contact Name', 'Not available')} - {row.get('Contact Title', 'N/A')}
-📧 **Contact:** {row.get('Contact Email', 'Not available')}
-🔗 **LinkedIn:** {row.get('Contact LinkedIn', 'Not available')}
-💰 **Investment Focus:** {row.get('Investment Focus', 'N/A')}
-💵 **Check Size:** ${row.get('Check Size Min', 'N/A')} - ${row.get('Check Size Max', 'N/A')}M
-📊 **Type:** {row.get('Type', 'N/A')}
-🤝 **Recent Deal:** {row.get('Recent Deal 1', 'N/A')}
-📝 **Notes:** {row.get('Notes', 'N/A')[:200]}...
+🏢 **{display_firm}**
+📍 **Location:** {display_country}, {display_city}
+👤 **Decision Maker:** {display_contact} - {display_title}
+📧 **Contact:** {display_email}
+🔗 **LinkedIn:** {display_linkedin}
+💰 **Investment Focus:** {display_focus}
+💵 **Check Size:** ${display_check_min} - ${display_check_max}M
+📊 **Type:** {display_type}
+🤝 **Recent Deal:** {display_deal}
+📝 **Notes:** {display_notes}
 """
             
             results.append({
                 'score': score,
-                'firm_name': row.get('FO Firm Name', 'N/A'),
-                'country': row.get('Country', 'N/A'),
-                'city': row.get('City', 'N/A'),
-                'contact_name': row.get('Contact Name', 'N/A'),
-                'contact_title': row.get('Contact Title', 'N/A'),
-                'contact_email': row.get('Contact Email', 'N/A'),
-                'investment_focus': row.get('Investment Focus', 'N/A'),
+                'firm_name': display_firm,
+                'country': display_country,
+                'city': display_city,
+                'contact_name': display_contact,
+                'contact_title': display_title,
+                'contact_email': display_email,
+                'investment_focus': display_focus,
                 'text': result_text,
                 'match_count': len(matches)
             })
@@ -464,6 +520,8 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True)
         
+        st.markdown("---")
+        
         # Filters
         st.markdown("### 🎯 Filters")
         if 'Country' in df.columns:
@@ -482,11 +540,13 @@ with st.sidebar:
         st.markdown("### ⚙️ Search Settings")
         top_k = st.slider("Number of results", min_value=3, max_value=20, value=10, key="top_k_slider")
         
+        st.markdown("---")
+        
         # Search history
         if st.session_state.search_history:
             st.markdown("### 📜 Recent Searches")
             for q in st.session_state.search_history[-5:]:
-                if st.button(f"🔍 {q}", key=f"hist_{q}"):
+                if st.button(f"🔍 {q}", key=f"hist_{q}", use_container_width=True):
                     st.session_state.example_query = q
                     st.rerun()
     else:
@@ -613,10 +673,10 @@ with tab1:
                                     })
                                     st.success("Saved!")
                                 
-                                if result.get('contact_name') and result['contact_name'] != 'N/A' and result['contact_name'] != 'nan':
+                                if result.get('contact_name') and result['contact_name'] != 'N/A':
                                     st.info(f"👤 {result['contact_name']}")
                                 
-                                if result.get('contact_email') and result['contact_email'] != 'N/A' and result['contact_email'] != 'nan':
+                                if result.get('contact_email') and result['contact_email'] != 'N/A':
                                     st.caption(f"📧 {result['contact_email']}")
             else:
                 st.markdown("""
@@ -656,6 +716,8 @@ with tab2:
             if 'Check Size Max' in df.columns:
                 df['Check Size Max'] = pd.to_numeric(df['Check Size Max'], errors='coerce')
                 avg_check = df['Check Size Max'].mean()
+                if pd.isna(avg_check):
+                    avg_check = 0
                 st.markdown(f"""
                 <div class="metric-card">
                     <h3>💰</h3>
@@ -674,6 +736,8 @@ with tab2:
                     <p>With AUM Data</p>
                 </div>
                 """, unsafe_allow_html=True)
+        
+        st.markdown("---")
         
         # Charts
         col1, col2 = st.columns(2)
@@ -717,19 +781,23 @@ with tab2:
             st.markdown("### 🎯 Top Investment Focus Areas")
             all_focuses = []
             for focus in df['Investment Focus'].dropna():
+                if pd.isna(focus):
+                    continue
                 for f in str(focus).split(','):
                     all_focuses.append(f.strip())
             
-            focus_counts = pd.Series(all_focuses).value_counts().head(15)
-            fig = px.bar(
-                x=focus_counts.values,
-                y=focus_counts.index,
-                orientation='h',
-                color=focus_counts.values,
-                color_continuous_scale=['#e6d5ff', '#8a2be2']
-            )
-            fig.update_layout(height=500)
-            st.plotly_chart(fig, use_container_width=True)
+            if all_focuses:
+                focus_counts = pd.Series(all_focuses).value_counts().head(15)
+                fig = px.bar(
+                    x=focus_counts.values,
+                    y=focus_counts.index,
+                    orientation='h',
+                    title="Most Common Investment Focus Areas",
+                    color=focus_counts.values,
+                    color_continuous_scale=['#e6d5ff', '#8a2be2']
+                )
+                fig.update_layout(height=500)
+                st.plotly_chart(fig, use_container_width=True)
     else:
         st.error("❌ Dataset not available for analytics")
 
