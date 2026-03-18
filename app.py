@@ -7,6 +7,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import time
+import os
 
 # Page config MUST be first command
 st.set_page_config(
@@ -17,7 +18,7 @@ st.set_page_config(
 )
 
 # ============================================
-# CUSTOM CSS - Your Original Beautiful Light Purple Theme
+# CUSTOM CSS - Beautiful Light Purple Theme
 # ============================================
 st.markdown("""
 <style>
@@ -27,7 +28,7 @@ st.markdown("""
     }
     
     /* Sidebar styling */
-    .css-1d391kg, .css-1wrcr25 {
+    section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, #d9c9ff 0%, #c4b0ff 100%);
     }
     
@@ -92,25 +93,6 @@ st.markdown("""
     .stTextInput > div > div > input:focus {
         border-color: #8a2be2;
         box-shadow: 0 0 0 2px rgba(138, 43, 226, 0.2);
-    }
-    
-    /* Chat messages */
-    .chat-message {
-        padding: 15px;
-        border-radius: 15px;
-        margin: 10px 0;
-        background: white;
-        border: 1px solid #e0d0ff;
-    }
-    
-    .user-message {
-        background: linear-gradient(135deg, #e6d5ff 0%, #d9c9ff 100%);
-        margin-left: 20%;
-    }
-    
-    .assistant-message {
-        background: white;
-        margin-right: 20%;
     }
     
     /* Expander */
@@ -178,6 +160,24 @@ st.markdown("""
         display: inline-block;
         margin-right: 10px;
     }
+    
+    /* Success box */
+    .success-box {
+        background: rgba(40, 167, 69, 0.1);
+        border-left: 4px solid #28a745;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    
+    /* Warning box */
+    .warning-box {
+        background: rgba(255, 193, 7, 0.1);
+        border-left: 4px solid #ffc107;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -190,9 +190,16 @@ if 'search_history' not in st.session_state:
     st.session_state.search_history = []
 if 'favorites' not in st.session_state:
     st.session_state.favorites = []
+if 'df' not in st.session_state:
+    try:
+        st.session_state.df = pd.read_csv('family_offices.csv')
+        st.session_state.data_loaded = True
+    except:
+        st.session_state.df = None
+        st.session_state.data_loaded = False
 
 # ============================================
-# Header - Your Original Beautiful Header
+# Header
 # ============================================
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
@@ -200,25 +207,36 @@ with col2:
     <div style="text-align: center; padding: 20px;">
         <h1 style="font-size: 3em; margin-bottom: 0;">🏦</h1>
         <h1 style="color: #4a2b7a; margin-top: -10px;">Family Office Intelligence</h1>
-        <p style="color: #6a4e8c; font-size: 1.2em;">Natural Language Query System</p>
+        <p style="color: #6a4e8c; font-size: 1.2em;">RAG-Powered Search System</p>
         <div style="height: 4px; width: 100px; background: linear-gradient(90deg, #8a2be2, #b16eff); margin: 20px auto;"></div>
     </div>
     """, unsafe_allow_html=True)
 
 # ============================================
-# Load RAG System with Caching
+# Load RAG System with Caching - FIXED VERSION
 # ============================================
 @st.cache_resource
 def load_rag_system():
-    """Load embedding model and vector database ONCE"""
+    """Load embedding model and vector database with error handling"""
     with st.spinner("🔄 Loading intelligence system..."):
         try:
             # Load embedding model
             model = SentenceTransformer('all-MiniLM-L6-v2')
             
-            # Load ChromaDB
-            client = chromadb.PersistentClient(path="./chroma_db")
-            collection = client.get_collection("family_offices")
+            # Try to load ChromaDB with compatibility mode
+            try:
+                client = chromadb.PersistentClient(path="./chroma_db")
+                # Try to get collection, if fails we'll recreate
+                try:
+                    collection = client.get_collection("family_offices")
+                    # Test if collection works
+                    collection.count()
+                except:
+                    st.warning("⚠️ Vector database needs to be recreated locally. Using pandas search fallback.")
+                    collection = None
+            except Exception as e:
+                st.warning(f"⚠️ ChromaDB error: {e}. Using pandas search fallback.")
+                collection = None
             
             # Load CSV for metadata
             df = pd.read_csv('family_offices.csv')
@@ -226,58 +244,87 @@ def load_rag_system():
             return model, collection, df
         except Exception as e:
             st.error(f"Error loading system: {e}")
-            return None, None, None
+            return None, None, st.session_state.df if st.session_state.data_loaded else None
 
 # Load everything
 model, collection, df = load_rag_system()
 
 # ============================================
-# Confidence Score Function
+# Fallback Search Function (Uses pandas if ChromaDB fails)
 # ============================================
+def pandas_search(query_text, df, country=None, fo_type=None):
+    """Simple pandas-based search as fallback"""
+    if df is None:
+        return []
+    
+    query_text = query_text.lower()
+    results = []
+    
+    for idx, row in df.iterrows():
+        score = 0
+        # Search in multiple columns
+        searchable_text = f"""
+        {row.get('FO Firm Name', '')} 
+        {row.get('Country', '')} 
+        {row.get('Investment Focus', '')} 
+        {row.get('Recent Deal 1', '')} 
+        {row.get('Recent Deal 2', '')} 
+        {row.get('Recent Deal 3', '')}
+        """.lower()
+        
+        if query_text in searchable_text:
+            score += 1
+        
+        # Apply filters
+        if country and country != 'All':
+            if str(row.get('Country', '')).lower() != country.lower():
+                score = 0
+        
+        if fo_type and fo_type != 'All':
+            if str(row.get('Type', '')).lower() != fo_type.lower():
+                score = 0
+        
+        if score > 0:
+            results.append({
+                'firm_name': row.get('FO Firm Name', 'N/A'),
+                'country': row.get('Country', 'N/A'),
+                'investment_focus': row.get('Investment Focus', 'N/A'),
+                'check_min': row.get('Check Size Min', 'N/A'),
+                'check_max': row.get('Check Size Max', 'N/A'),
+                'recent_deal': row.get('Recent Deal 1', 'N/A'),
+                'text': f"""
+Family Office: {row.get('FO Firm Name', 'N/A')}
+Location: {row.get('Country', 'N/A')}, {row.get('City', 'N/A')}
+Type: {row.get('Type', 'N/A')}
+Investment Focus: {row.get('Investment Focus', 'N/A')}
+Check Size: ${row.get('Check Size Min', 'N/A')} - ${row.get('Check Size Max', 'N/A')}
+Recent Deal: {row.get('Recent Deal 1', 'N/A')}
+Contact: {row.get('Contact Name', 'N/A')} - {row.get('Contact Title', 'N/A')}
+"""
+            })
+    
+    return results[:10]
+
 # ============================================
-# Confidence Score Function - FIXED VERSION
+# Confidence Score Function - FIXED
 # ============================================
-def calculate_confidence(results):
-    """Calculate confidence based on similarity scores"""
-    if not results or not results.get('distances'):
+def calculate_confidence(results, method="rag"):
+    """Calculate confidence based on results"""
+    if not results:
         return 0, "low"
     
-    # Check if distances[0] exists and is a list
-    if not results['distances'] or len(results['distances']) == 0:
-        return 0, "low"
-    
-    distances_first = results['distances'][0]
-    
-    # Handle case where distances_first is a single float (not a list)
-    if isinstance(distances_first, (int, float)):
-        # Single value case
-        similarity = 1 - (distances_first / 2)
-        confidence = similarity * 0.7 + 0.3  # Single result with good similarity
-        if confidence > 0.7:
-            return confidence, "high"
-        elif confidence > 0.4:
-            return confidence, "medium"
+    if method == "rag" and isinstance(results, dict) and results.get('distances'):
+        # RAG-based confidence
+        distances = results.get('distances', [[]])[0]
+        if distances and len(distances) > 0:
+            avg_similarity = 1 - (sum(distances) / len(distances) / 2)
+            num_results = len(distances)
+            confidence = (avg_similarity * 0.7) + (min(num_results / 10, 1) * 0.3)
         else:
-            return confidence, "low"
-    
-    # Handle case where distances_first is a list
-    if not isinstance(distances_first, list):
-        return 0, "low"
-    
-    # Convert distances to similarities (0-1 range)
-    similarities = []
-    for d in distances_first:
-        if d is not None:
-            similarities.append(1 - (d/2))
-    
-    if not similarities:
-        return 0, "low"
-    
-    avg_similarity = sum(similarities) / len(similarities)
-    num_results = len(similarities)
-    
-    # More results with high similarity = higher confidence
-    confidence = (avg_similarity * 0.7) + (min(num_results / 10, 1) * 0.3)
+            confidence = 0.5
+    else:
+        # Pandas-based confidence (default to medium)
+        confidence = 0.6
     
     if confidence > 0.7:
         return confidence, "high"
@@ -287,101 +334,58 @@ def calculate_confidence(results):
         return confidence, "low"
 
 # ============================================
-# RAG Search Function
+# RAG Search Function - FIXED for compatibility
 # ============================================
 def rag_search(query_text, top_k=10, country=None, fo_type=None):
     if model is None or collection is None:
         return None
     
-    # Create query embedding
-    query_embedding = model.encode(query_text).tolist()
-    
-    # Search in ChromaDB
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=top_k * 2,  # Get more for filtering
-        include=["documents", "metadatas", "distances"]
-    )
-    
-    # Apply filters if needed
-    if (country and country != 'All') or (fo_type and fo_type != 'All'):
-        filtered_indices = []
-        if results['metadatas'][0]:
-            for i, metadata in enumerate(results['metadatas'][0]):
-                include = True
-                if country and country != 'All':
-                    if metadata.get('country', '').lower() != country.lower():
-                        include = False
-                if fo_type and fo_type != 'All':
-                    if metadata.get('type', '').lower() != fo_type.lower():
-                        include = False
-                if include:
-                    filtered_indices.append(i)
-        
-        # Prepare filtered results
-        filtered_results = {
-            'ids': [results['ids'][0][i] for i in filtered_indices[:top_k]],
-            'documents': [results['documents'][0][i] for i in filtered_indices[:top_k]],
-            'metadatas': [results['metadatas'][0][i] for i in filtered_indices[:top_k]],
-            'distances': [results['distances'][0][i] for i in filtered_indices[:top_k]]
-        }
-        return filtered_results
-    else:
-        # Return top_k results without filtering
-        return {
-            'ids': results['ids'][0][:top_k],
-            'documents': results['documents'][0][:top_k],
-            'metadatas': results['metadatas'][0][:top_k],
-            'distances': results['distances'][0][:top_k]
-        }
-
-# ============================================
-# Generate LLM Answer
-# ============================================
-def generate_llm_answer(query_text, context_docs, confidence_level):
-    if not context_docs:
-        return "I don't have any relevant documents to answer your question."
-    
-    # Prepare context
-    context = "\n\n---\n\n".join([
-        f"Document {i+1}:\n{doc}" 
-        for i, doc in enumerate(context_docs[:5])
-    ])
-    
-    prompt = f"""You are a family office intelligence expert. Answer the question based ONLY on the provided context.
-
-CONTEXT:
-{context}
-
-QUESTION: {query_text}
-
-CONFIDENCE LEVEL: {confidence_level}
-
-RULES:
-1. If the answer is in the context, provide it with specific examples
-2. If only partial information exists, say what you know and what's missing
-3. If the context doesn't contain the answer, say: "I don't have information about that in my database"
-4. NEVER make up information
-5. Be specific - mention family office names, locations, and investment focus
-
-ANSWER:"""
-    
     try:
-        response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful family office expert."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=500
+        # Create query embedding
+        query_embedding = model.encode(query_text).tolist()
+        
+        # Search in ChromaDB
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k * 2,
+            include=["documents", "metadatas", "distances"]
         )
-        return response.choices[0].message.content
+        
+        # Apply filters
+        if (country and country != 'All') or (fo_type and fo_type != 'All'):
+            filtered_indices = []
+            if results['metadatas'][0]:
+                for i, metadata in enumerate(results['metadatas'][0]):
+                    include = True
+                    if country and country != 'All':
+                        if metadata.get('country', '').lower() != country.lower():
+                            include = False
+                    if fo_type and fo_type != 'All':
+                        if metadata.get('type', '').lower() != fo_type.lower():
+                            include = False
+                    if include:
+                        filtered_indices.append(i)
+            
+            filtered_results = {
+                'ids': [results['ids'][0][i] for i in filtered_indices[:top_k]],
+                'documents': [results['documents'][0][i] for i in filtered_indices[:top_k]],
+                'metadatas': [results['metadatas'][0][i] for i in filtered_indices[:top_k]],
+                'distances': [results['distances'][0][i] for i in filtered_indices[:top_k]]
+            }
+            return filtered_results
+        else:
+            return {
+                'ids': results['ids'][0][:top_k],
+                'documents': results['documents'][0][:top_k],
+                'metadatas': results['metadatas'][0][:top_k],
+                'distances': results['distances'][0][:top_k]
+            }
     except Exception as e:
-        return None  # Return None if LLM fails
+        st.warning(f"RAG search error: {e}. Using fallback search.")
+        return None
 
 # ============================================
-# Sidebar - Your Original Beautiful Sidebar
+# Sidebar
 # ============================================
 with st.sidebar:
     st.markdown("""
@@ -411,62 +415,31 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True)
         
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Investment focus distribution
-        st.markdown("### 🎯 Investment Focus")
-        if 'Investment Focus' in df.columns:
-            focus_counts = df['Investment Focus'].value_counts().head(5)
-            fig = px.pie(
-                values=focus_counts.values,
-                names=focus_counts.index,
-                color_discrete_sequence=['#8a2be2', '#9b4dff', '#b16eff', '#c68eff', '#d9b0ff'],
-                hole=0.4
-            )
-            fig.update_layout(
-                showlegend=True,
-                margin=dict(t=0, b=0, l=0, r=0),
-                height=200,
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
         # Filters
         st.markdown("### 🎯 Filters")
         if 'Country' in df.columns:
             countries_list = ['All'] + sorted(df['Country'].dropna().unique().tolist())
-            selected_country = st.selectbox("Country", countries_list)
+            selected_country = st.selectbox("Country", countries_list, key="country_filter")
+        else:
+            selected_country = 'All'
         
         if 'Type' in df.columns:
             types_list = ['All'] + sorted(df['Type'].dropna().unique().tolist())
-            selected_type = st.selectbox("Family Office Type", types_list)
+            selected_type = st.selectbox("Family Office Type", types_list, key="type_filter")
+        else:
+            selected_type = 'All'
         
-        # RAG settings
+        # Search settings
         st.markdown("### ⚙️ Search Settings")
-        top_k = st.slider("Number of results", min_value=3, max_value=20, value=10)
-        
-        use_llm = st.checkbox("🤖 Use AI for better answers", value=False)
-        if use_llm:
-            api_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
-            if api_key:
-                openai.api_key = api_key
-                st.success("✅ API key set")
+        top_k = st.slider("Number of results", min_value=3, max_value=20, value=10, key="top_k_slider")
         
         # Search history
         if st.session_state.search_history:
             st.markdown("### 📜 Recent Searches")
             for q in st.session_state.search_history[-5:]:
                 if st.button(f"🔍 {q}", key=f"hist_{q}"):
-                    st.session_state["example_query"] = q
+                    st.session_state.example_query = q
                     st.rerun()
-        
-        # Footer in sidebar
-        st.markdown("""
-        <div style="position: fixed; bottom: 0; padding: 20px; text-align: center; width: 100%;">
-            <p style="color: #4a2b7a; font-size: 0.8em;">Built with ❤️ for PolarityIQ</p>
-        </div>
-        """, unsafe_allow_html=True)
 
 # ============================================
 # Main Tabs
@@ -474,13 +447,14 @@ with st.sidebar:
 tab1, tab2, tab3 = st.tabs(["🔍 Query", "📊 Analytics", "⭐ Favorites"])
 
 # ============================================
-# Tab 1: Query Interface - Your Original Beautiful Design
+# Tab 1: Query Interface
 # ============================================
 with tab1:
-    # Search bar with fancy styling
+    # Search bar
     st.markdown("""
     <div style="background: rgba(255,255,255,0.5); padding: 30px; border-radius: 20px; margin: 20px 0;">
         <h3 style="text-align: center; color: #4a2b7a;">Ask anything about family offices</h3>
+    </div>
     """, unsafe_allow_html=True)
     
     query = st.text_input(
@@ -492,23 +466,22 @@ with tab1:
     
     st.markdown("</div>", unsafe_allow_html=True)
     
-    # Example queries as beautiful chips
+    # Example queries
     st.markdown("### 💡 Try these examples:")
     examples = [
-        "🏦 Which family offices invest in AI?",
-        "🌍 Show family offices in Europe",
-        "💰 Find offices with check sizes > $10M",
-        "👥 Who are decision makers at Singapore offices?",
-        "🏥 Recent healthcare investments",
-        "🤝 Co-investors with Sequoia"
+        "Which family offices invest in AI?",
+        "Show family offices in Europe",
+        "Recent climate tech deals",
+        "Healthcare investors with $10M+ checks",
+        "Singapore family offices",
+        "Co-investors with Sequoia"
     ]
     
     cols = st.columns(3)
     for i, ex in enumerate(examples):
         with cols[i % 3]:
-            if st.button(ex, key=f"ex_{i}", use_container_width=True):
-                query = ex.split(" ", 1)[1]  # Remove emoji
-                st.session_state["example_query"] = query
+            if st.button(f"🔍 {ex}", key=f"ex_{i}", use_container_width=True):
+                query = ex
                 st.rerun()
     
     # Process query
@@ -523,25 +496,28 @@ with tab1:
         
         st.markdown("---")
         
-        # User message
+        # Show user message
         with st.chat_message("user"):
             st.markdown(query)
         
         # Search
-        with st.spinner("🔍 Searching family office database..."):
-            results = rag_search(
-                query,
-                top_k=top_k,
-                country=selected_country if 'selected_country' in locals() else None,
-                fo_type=selected_type if 'selected_type' in locals() else None
-            )
+        with st.spinner("🔍 Searching..."):
+            # Try RAG first, fallback to pandas
+            rag_results = rag_search(query, top_k=top_k, country=selected_country, fo_type=selected_type)
+            
+            if rag_results and rag_results.get('documents'):
+                results = rag_results
+                search_method = "rag"
+            else:
+                results = pandas_search(query, df, country=selected_country, fo_type=selected_type)
+                search_method = "pandas"
         
         # Calculate confidence
-        confidence_score, confidence_level = calculate_confidence(results)
+        confidence_score, confidence_level = calculate_confidence(results, search_method)
         
         # Assistant response
         with st.chat_message("assistant"):
-            if results and results['documents']:
+            if results:
                 # Show confidence badge
                 if confidence_level == "high":
                     st.markdown(f'<span class="confidence-high">✨ High Confidence ({confidence_score:.1%})</span>', unsafe_allow_html=True)
@@ -550,32 +526,12 @@ with tab1:
                 else:
                     st.markdown(f'<span class="confidence-low">⚠️ Low Confidence ({confidence_score:.1%})</span>', unsafe_allow_html=True)
                 
-                # Generate LLM answer if enabled
-                if use_llm and 'openai' in dir() and openai.api_key:
-                    llm_answer = generate_llm_answer(query, results['documents'], confidence_level)
-                    if llm_answer:
-                        st.markdown("### Answer:")
-                        st.markdown(llm_answer)
-                    else:
-                        st.markdown("### 📊 Found these family offices:")
-                else:
-                    st.markdown("### 📊 Found these family offices:")
-                
-                # Show results in expanders
-                for i, (doc, metadata, dist) in enumerate(zip(
-                    results['documents'][:5], 
-                    results['metadatas'][:5],
-                    results['distances'][:5]
-                )):
-                    similarity = 1 - (dist/2) if dist else 0.5
-                    firm_name = metadata.get('firm_name', 'Family Office') if metadata else 'Family Office'
-                    
-                    with st.expander(f"🏦 **{firm_name}** (Match: {similarity:.1%})", expanded=i==0):
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
+                if search_method == "rag":
+                    st.markdown("### 📊 Found these family offices (RAG search):")
+                    for i, (doc, metadata) in enumerate(zip(results['documents'][:5], results['metadatas'][:5])):
+                        firm_name = metadata.get('firm_name', 'Family Office')
+                        with st.expander(f"🏦 **{firm_name}**", expanded=i==0):
                             st.markdown(doc)
-                        with col2:
-                            st.markdown("**Quick Actions:**")
                             if st.button("⭐ Save", key=f"fav_{i}_{firm_name}"):
                                 st.session_state.favorites.append({
                                     'name': firm_name,
@@ -583,8 +539,24 @@ with tab1:
                                     'query': query
                                 })
                                 st.success("Saved!")
+                else:
+                    st.markdown("### 📊 Found these family offices (quick search):")
+                    for i, result in enumerate(results[:5]):
+                        with st.expander(f"🏦 **{result['firm_name']}**", expanded=i==0):
+                            st.markdown(result['text'])
+                            if st.button("⭐ Save", key=f"fav_{i}_{result['firm_name']}"):
+                                st.session_state.favorites.append({
+                                    'name': result['firm_name'],
+                                    'text': result['text'][:200] + '...',
+                                    'query': query
+                                })
+                                st.success("Saved!")
             else:
-                st.markdown("😕 I don't have information about that in my database. Try a different query or remove filters.")
+                st.markdown("""
+                <div class="warning-box">
+                    <strong>😕 No results found.</strong> Try different keywords or remove filters.
+                </div>
+                """, unsafe_allow_html=True)
 
 # ============================================
 # Tab 2: Analytics Dashboard
@@ -627,10 +599,11 @@ with tab2:
         
         with col4:
             if 'AUM Range' in df.columns:
+                aum_count = df['AUM Range'].notna().sum()
                 st.markdown(f"""
                 <div class="metric-card">
                     <h3>📈</h3>
-                    <h2>{df['AUM Range'].notna().sum()}</h2>
+                    <h2>{aum_count}</h2>
                     <p>With AUM Data</p>
                 </div>
                 """, unsafe_allow_html=True)
@@ -669,16 +642,6 @@ with tab2:
                 )
                 fig.update_layout(height=400)
                 st.plotly_chart(fig, use_container_width=True)
-        
-        # Investment focus
-        if 'Investment Focus' in df.columns:
-            st.markdown("### 🎯 Investment Focus Distribution")
-            focus_text = ' '.join(df['Investment Focus'].dropna().astype(str))
-            st.markdown(f"""
-            <div style="background: white; padding: 20px; border-radius: 15px;">
-                <p style="font-size: 1.2em; line-height: 1.8;">{focus_text[:500]}...</p>
-            </div>
-            """, unsafe_allow_html=True)
 
 # ============================================
 # Tab 3: Favorites
@@ -708,11 +671,11 @@ with tab3:
         """, unsafe_allow_html=True)
 
 # ============================================
-# Footer - Your Original Beautiful Footer
+# Footer
 # ============================================
 st.markdown("""
 <div class="footer">
-    <p>Powered by ChromaDB + Sentence Transformers | Data last updated: March 2026</p>
-    <p style="font-size: 0.8em;">388 family offices • 27 data points • Real-time RAG queries</p>
+    <p>Powered by ChromaDB + Sentence Transformers | Fallback: Pandas Search</p>
+    <p style="font-size: 0.8em;">388 family offices • 27 data points</p>
 </div>
 """, unsafe_allow_html=True)
