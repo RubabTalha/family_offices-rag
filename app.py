@@ -240,36 +240,62 @@ df = st.session_state.df if st.session_state.data_loaded else None
 # ============================================
 @st.cache_resource
 def load_rag_system():
-    """Load embedding model and vector database - cached, runs once"""
-    start_time = time.time()
-   
-    # Create placeholder for status
     status = st.empty()
-    status.info("🔄 Loading RAG system (first load takes 15-20 seconds)...")
-   
+    status.info("🔄 Initializing RAG system...")
+
     try:
-        # Load embedding model
-        status.info("📦 Loading embedding model (90MB)...")
         model = SentenceTransformer('all-MiniLM-L6-v2')
-       
-        # Load ChromaDB
-        status.info("🗄️ Connecting to vector database...")
-        client = chromadb.PersistentClient(path="./chroma_db")
-        collection = client.get_collection("family_offices")
-       
-        # Verify collection
-        count = collection.count()
-       
-        load_time = time.time() - start_time
-        status.success(f"✅ RAG ready! {count} documents loaded in {load_time:.1f}s")
+        status.info("📦 Embedding model loaded")
+
+        # Use in-memory client instead of PersistentClient
+        client = chromadb.Client()  # ← changed line (no path)
+        try:
+            collection = client.get_collection("family_offices")
+        except:
+            status.info("Building collection from CSV (first run or in-memory reset)...")
+            df = pd.read_csv('family_offices.csv')
+
+            documents = []
+            metadatas = []
+            ids = []
+
+            for idx, row in df.iterrows():
+                if pd.isna(row.get('FO Firm Name')):
+                    continue
+                text = f"""Family Office: {row.get('FO Firm Name', 'N/A')}
+Location: {row.get('Country', 'N/A')}, {row.get('City', 'N/A')}
+Type: {row.get('Type', 'N/A')}
+Focus: {row.get('Investment Focus', 'N/A')}
+..."""  # ← keep your full rich text logic here
+
+                documents.append(text)
+                metadatas.append({
+                    'firm_name': str(row.get('FO Firm Name', '')),
+                    'country': str(row.get('Country', '')),
+                    'type': str(row.get('Type', ''))
+                })
+                ids.append(f"fo_{idx}")
+
+            collection = client.create_collection(
+                name="family_offices",
+                metadata={"hnsw:space": "cosine"}
+            )
+            collection.add(
+                documents=documents,
+                metadatas=metadatas,
+                ids=ids,
+                embeddings=model.encode(documents).tolist()
+            )
+            status.success(f"Collection built with {collection.count()} items")
+
+        status.success("✅ RAG ready!")
         time.sleep(1)
         status.empty()
-       
+
         return model, collection, True
+
     except Exception as e:
-        status.error(f"❌ RAG failed: {e}")
-        time.sleep(2)
-        status.empty()
+        status.error(f"❌ Failed: {str(e)}")
         return None, None, False
 
 # ============================================
