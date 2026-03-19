@@ -8,6 +8,8 @@ from datetime import datetime
 import time
 import os
 import numpy as np
+import hashlib
+import pickle
 
 # Page config MUST be first command
 st.set_page_config(
@@ -26,18 +28,19 @@ st.markdown("""
     .stApp {
         background: linear-gradient(135deg, #f5e9ff 0%, #e6d5ff 100%);
     }
-    
+   
     /* Sidebar styling */
     section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, #d9c9ff 0%, #c4b0ff 100%);
+        padding: 20px 10px;
     }
-    
+   
     /* Headers with subtle purple */
     h1, h2, h3 {
         color: #4a2b7a !important;
         font-weight: 600 !important;
     }
-    
+   
     /* Cards for results */
     .result-card {
         background: rgba(255, 255, 255, 0.7);
@@ -49,12 +52,12 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(106, 13, 173, 0.1);
         transition: transform 0.3s ease;
     }
-    
+   
     .result-card:hover {
         transform: translateY(-2px);
         box-shadow: 0 6px 20px rgba(106, 13, 173, 0.15);
     }
-    
+   
     /* Metric cards */
     .metric-card {
         background: white;
@@ -64,7 +67,7 @@ st.markdown("""
         border-left: 4px solid #8a2be2;
         box-shadow: 0 2px 10px rgba(0,0,0,0.05);
     }
-    
+   
     /* Buttons */
     .stButton > button {
         background: linear-gradient(135deg, #8a2be2 0%, #9b4dff 100%);
@@ -75,13 +78,13 @@ st.markdown("""
         font-weight: 500;
         transition: all 0.3s ease;
     }
-    
+   
     .stButton > button:hover {
         background: linear-gradient(135deg, #9b4dff 0%, #b16eff 100%);
         box-shadow: 0 4px 15px rgba(138, 43, 226, 0.3);
         transform: translateY(-2px);
     }
-    
+   
     /* Input fields */
     .stTextInput > div > div > input {
         border: 2px solid #e0d0ff;
@@ -89,37 +92,37 @@ st.markdown("""
         padding: 10px;
         background: rgba(255, 255, 255, 0.9);
     }
-    
+   
     .stTextInput > div > div > input:focus {
         border-color: #8a2be2;
         box-shadow: 0 0 0 2px rgba(138, 43, 226, 0.2);
     }
-    
+   
     /* Expander */
     .streamlit-expanderHeader {
         background: rgba(138, 43, 226, 0.1);
         border-radius: 8px;
         color: #4a2b7a;
     }
-    
+   
     /* Tabs */
     .stTabs [data-baseweb="tab-list"] {
         gap: 10px;
     }
-    
+   
     .stTabs [data-baseweb="tab"] {
         background: rgba(255, 255, 255, 0.5);
         border-radius: 8px 8px 0 0;
         padding: 10px 20px;
         color: #4a2b7a;
     }
-    
+   
     .stTabs [aria-selected="true"] {
         background: white;
         color: #8a2be2;
         font-weight: 600;
     }
-    
+   
     /* Footer */
     .footer {
         text-align: center;
@@ -129,8 +132,8 @@ st.markdown("""
         border-top: 1px solid rgba(138, 43, 226, 0.2);
         margin-top: 50px;
     }
-    
-    /* Confidence badges */
+   
+    /* Confidence badges - pure similarity based */
     .confidence-high {
         background: #28a745;
         color: white;
@@ -140,7 +143,7 @@ st.markdown("""
         display: inline-block;
         margin-right: 10px;
     }
-    
+   
     .confidence-medium {
         background: #ffc107;
         color: black;
@@ -150,7 +153,7 @@ st.markdown("""
         display: inline-block;
         margin-right: 10px;
     }
-    
+   
     .confidence-low {
         background: #dc3545;
         color: white;
@@ -160,7 +163,18 @@ st.markdown("""
         display: inline-block;
         margin-right: 10px;
     }
-    
+   
+    /* Loading animation */
+    @keyframes pulse {
+        0% { opacity: 0.6; }
+        50% { opacity: 1; }
+        100% { opacity: 0.6; }
+    }
+   
+    .loading-pulse {
+        animation: pulse 1.5s infinite;
+    }
+   
     /* Success box */
     .success-box {
         background: rgba(40, 167, 69, 0.1);
@@ -169,7 +183,7 @@ st.markdown("""
         border-radius: 5px;
         margin: 10px 0;
     }
-    
+   
     /* Warning box */
     .warning-box {
         background: rgba(255, 193, 7, 0.1);
@@ -190,6 +204,10 @@ if 'search_history' not in st.session_state:
     st.session_state.search_history = []
 if 'favorites' not in st.session_state:
     st.session_state.favorites = []
+if 'model_loaded' not in st.session_state:
+    st.session_state.model_loaded = False
+if 'collection_loaded' not in st.session_state:
+    st.session_state.collection_loaded = False
 if 'df' not in st.session_state:
     try:
         st.session_state.df = pd.read_csv('family_offices.csv')
@@ -197,7 +215,6 @@ if 'df' not in st.session_state:
     except Exception as e:
         st.session_state.df = None
         st.session_state.data_loaded = False
-        st.error(f"Error loading CSV: {e}")
 
 # ============================================
 # Header
@@ -208,254 +225,72 @@ with col2:
     <div style="text-align: center; padding: 20px;">
         <h1 style="font-size: 3em; margin-bottom: 0;">🏦</h1>
         <h1 style="color: #4a2b7a; margin-top: -10px;">Family Office Intelligence</h1>
-        <p style="color: #6a4e8c; font-size: 1.2em;">RAG-Powered Search System</p>
+        <p style="color: #6a4e8c; font-size: 1.2em;">Pure RAG - Semantic Search</p>
         <div style="height: 4px; width: 100px; background: linear-gradient(90deg, #8a2be2, #b16eff); margin: 20px auto;"></div>
     </div>
     """, unsafe_allow_html=True)
 
 # ============================================
-# Load RAG System with Caching
+# Load Data Only First (Fast)
+# ============================================
+df = st.session_state.df if st.session_state.data_loaded else None
+
+# ============================================
+# Lazy Load RAG System - Only When Needed
 # ============================================
 @st.cache_resource
 def load_rag_system():
-    """Load embedding model and vector database with error handling"""
-    with st.spinner("🔄 Loading intelligence system..."):
-        try:
-            # Load embedding model
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-            
-            # Try to load ChromaDB with compatibility mode
-            try:
-                client = chromadb.PersistentClient(path="./chroma_db")
-                # Try to get collection, if fails we'll recreate
-                try:
-                    collection = client.get_collection("family_offices")
-                    # Test if collection works
-                    collection.count()
-                    st.success("✅ RAG system loaded successfully!")
-                except Exception as e:
-                    st.warning(f"⚠️ Vector database issue: {e}. Using enhanced keyword search fallback.")
-                    collection = None
-            except Exception as e:
-                st.warning(f"⚠️ ChromaDB error: {e}. Using enhanced keyword search fallback.")
-                collection = None
-            
-            # Load CSV for metadata
-            df = pd.read_csv('family_offices.csv')
-            
-            return model, collection, df
-        except Exception as e:
-            st.error(f"Error loading system: {e}")
-            return None, None, st.session_state.df if st.session_state.data_loaded else None
-
-# Load everything
-model, collection, df = load_rag_system()
-
-# ============================================
-# Helper Functions for Safe String Handling
-# ============================================
-def safe_str(val):
-    """Convert any value to lowercase string safely"""
-    if pd.isna(val) or val is None:
-        return ''
-    return str(val).lower()
-
-def safe_str_display(val, default='N/A'):
-    """Convert any value to display string safely"""
-    if pd.isna(val) or val is None:
-        return default
-    return str(val)
-
-def safe_int(val, default=0):
-    """Convert any value to int safely"""
-    if pd.isna(val) or val is None:
-        return default
+    """Load embedding model and vector database - cached, runs once"""
+    start_time = time.time()
+   
+    # Create placeholder for status
+    status = st.empty()
+    status.info("🔄 Loading RAG system (first load takes 15-20 seconds)...")
+   
     try:
-        return int(float(val))
-    except:
-        return default
+        # Load embedding model
+        status.info("📦 Loading embedding model (90MB)...")
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+       
+        # Load ChromaDB
+        status.info("🗄️ Connecting to vector database...")
+        client = chromadb.PersistentClient(path="./chroma_db")
+        collection = client.get_collection("family_offices")
+       
+        # Verify collection
+        count = collection.count()
+       
+        load_time = time.time() - start_time
+        status.success(f"✅ RAG ready! {count} documents loaded in {load_time:.1f}s")
+        time.sleep(1)
+        status.empty()
+       
+        return model, collection, True
+    except Exception as e:
+        status.error(f"❌ RAG failed: {e}")
+        time.sleep(2)
+        status.empty()
+        return None, None, False
 
 # ============================================
-# Improved Fallback Search Function - FULLY FIXED
+# Pure RAG Search Function
 # ============================================
-def pandas_search(query_text, df, country=None, fo_type=None):
-    """Improved pandas-based search with better matching and safe string handling"""
-    if df is None or len(df) == 0:
-        return []
-    
-    query_text = query_text.lower().strip()
-    results = []
-    
-    # Split query into keywords for better matching
-    keywords = [k for k in query_text.split() if len(k) > 2]  # Remove short words
-    
-    for idx, row in df.iterrows():
-        score = 0
-        matches = []
-        
-        # Get values safely using helper functions
-        firm_name = safe_str(row.get('FO Firm Name'))
-        country_val = safe_str(row.get('Country'))
-        city_val = safe_str(row.get('City'))
-        investment_focus = safe_str(row.get('Investment Focus'))
-        recent_deal_1 = safe_str(row.get('Recent Deal 1'))
-        recent_deal_2 = safe_str(row.get('Recent Deal 2'))
-        recent_deal_3 = safe_str(row.get('Recent Deal 3'))
-        contact_name = safe_str(row.get('Contact Name'))
-        contact_title = safe_str(row.get('Contact Title'))
-        notes_val = safe_str(row.get('Notes'))
-        
-        # Check for exact phrase match first (higher score)
-        if query_text in firm_name or query_text in notes_val:
-            score += 5
-        
-        # Check for "decision maker" related queries
-        if any(word in query_text for word in ['decision', 'maker', 'who', 'contact', 'run', 'runs']):
-            if contact_name and contact_name != '':
-                score += 3
-                matches.append('has_contact')
-        
-        # Check for location queries
-        if 'singapore' in query_text and country_val == 'singapore':
-            score += 10
-            matches.append('singapore')
-        
-        if 'europe' in query_text and country_val in ['uk', 'germany', 'france', 'switzerland', 'denmark', 'sweden', 'italy', 'spain', 'netherlands']:
-            score += 5
-            matches.append('europe')
-        
-        if 'asia' in query_text and country_val in ['singapore', 'hong kong', 'china', 'japan', 'korea', 'india']:
-            score += 5
-            matches.append('asia')
-        
-        if 'usa' in query_text or 'us' in query_text or 'america' in query_text:
-            if country_val in ['usa', 'united states', 'us']:
-                score += 5
-                matches.append('usa')
-        
-        # Then check individual keywords
-        for keyword in keywords:
-            searchable_fields = [
-                firm_name, country_val, city_val, investment_focus,
-                recent_deal_1, recent_deal_2, recent_deal_3,
-                contact_name, contact_title, notes_val
-            ]
-            for field_value in searchable_fields:
-                if keyword in field_value:
-                    score += 1
-                    matches.append(keyword)
-        
-        # Apply filters
-        if country and country != 'All':
-            if country_val != country.lower():
-                score = 0
-        
-        if fo_type and fo_type != 'All':
-            type_val = safe_str(row.get('Type'))
-            if type_val != fo_type.lower():
-                score = 0
-        
-        if score > 0:
-            # Get display values safely
-            display_firm = safe_str_display(row.get('FO Firm Name'))
-            display_country = safe_str_display(row.get('Country'))
-            display_city = safe_str_display(row.get('City'))
-            display_contact = safe_str_display(row.get('Contact Name'))
-            display_title = safe_str_display(row.get('Contact Title'))
-            display_email = safe_str_display(row.get('Contact Email'))
-            display_linkedin = safe_str_display(row.get('Contact LinkedIn'))
-            display_focus = safe_str_display(row.get('Investment Focus'))
-            display_check_min = safe_str_display(row.get('Check Size Min'))
-            display_check_max = safe_str_display(row.get('Check Size Max'))
-            display_type = safe_str_display(row.get('Type'))
-            display_deal = safe_str_display(row.get('Recent Deal 1'))
-            display_notes = safe_str_display(row.get('Notes'))
-            
-            # Truncate notes if too long
-            if len(display_notes) > 200:
-                display_notes = display_notes[:200] + '...'
-            
-            # Create rich result text
-            result_text = f"""
-🏢 **{display_firm}**
-📍 **Location:** {display_country}, {display_city}
-👤 **Decision Maker:** {display_contact} - {display_title}
-📧 **Contact:** {display_email}
-🔗 **LinkedIn:** {display_linkedin}
-💰 **Investment Focus:** {display_focus}
-💵 **Check Size:** ${display_check_min} - ${display_check_max}M
-📊 **Type:** {display_type}
-🤝 **Recent Deal:** {display_deal}
-📝 **Notes:** {display_notes}
-"""
-            
-            results.append({
-                'score': score,
-                'firm_name': display_firm,
-                'country': display_country,
-                'city': display_city,
-                'contact_name': display_contact,
-                'contact_title': display_title,
-                'contact_email': display_email,
-                'investment_focus': display_focus,
-                'text': result_text,
-                'match_count': len(matches)
-            })
-    
-    # Sort by score (highest first)
-    results.sort(key=lambda x: x['score'], reverse=True)
-    return results[:15]  # Return top 15
-
-# ============================================
-# Confidence Score Function
-# ============================================
-def calculate_confidence(results, method="rag"):
-    """Calculate confidence based on results"""
-    if not results:
-        return 0, "low"
-    
-    if method == "rag" and isinstance(results, dict) and results.get('distances'):
-        # RAG-based confidence
-        distances = results.get('distances', [[]])[0]
-        if distances and len(distances) > 0:
-            avg_similarity = 1 - (sum(distances) / len(distances) / 2)
-            num_results = len(distances)
-            confidence = (avg_similarity * 0.7) + (min(num_results / 10, 1) * 0.3)
-        else:
-            confidence = 0.5
-    else:
-        # Pandas-based confidence based on score distribution
-        if isinstance(results, list) and len(results) > 0:
-            avg_score = sum([r.get('score', 0) for r in results]) / len(results)
-            confidence = min(avg_score / 20, 0.9)  # Normalize to 0-0.9 range
-        else:
-            confidence = 0.5
-    
-    if confidence > 0.7:
-        return confidence, "high"
-    elif confidence > 0.4:
-        return confidence, "medium"
-    else:
-        return confidence, "low"
-
-# ============================================
-# RAG Search Function
-# ============================================
-def rag_search(query_text, top_k=10, country=None, fo_type=None):
+def rag_search(query_text, model, collection, top_k=10, country=None, fo_type=None):
+    """Pure RAG search using semantic similarity"""
     if model is None or collection is None:
         return None
-    
+   
     try:
         # Create query embedding
         query_embedding = model.encode(query_text).tolist()
-        
+       
         # Search in ChromaDB
         results = collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k * 2,
             include=["documents", "metadatas", "distances"]
         )
-        
+       
         # Apply filters
         if (country and country != 'All') or (fo_type and fo_type != 'All'):
             filtered_indices = []
@@ -470,36 +305,55 @@ def rag_search(query_text, top_k=10, country=None, fo_type=None):
                             include = False
                     if include:
                         filtered_indices.append(i)
-            
-            filtered_results = {
-                'ids': [results['ids'][0][i] for i in filtered_indices[:top_k]],
+           
+            return {
                 'documents': [results['documents'][0][i] for i in filtered_indices[:top_k]],
                 'metadatas': [results['metadatas'][0][i] for i in filtered_indices[:top_k]],
                 'distances': [results['distances'][0][i] for i in filtered_indices[:top_k]]
             }
-            return filtered_results
         else:
             return {
-                'ids': results['ids'][0][:top_k],
                 'documents': results['documents'][0][:top_k],
                 'metadatas': results['metadatas'][0][:top_k],
                 'distances': results['distances'][0][:top_k]
             }
     except Exception as e:
-        st.warning(f"RAG search error: {e}. Using fallback search.")
+        st.error(f"Search error: {e}")
         return None
 
 # ============================================
-# Sidebar
+# Confidence Score
+# ============================================
+def calculate_confidence(distances):
+    """Calculate confidence purely from semantic distance"""
+    if not distances or len(distances) == 0:
+        return 0, "low"
+   
+    similarities = [1 - (d/2) for d in distances if d is not None]
+   
+    if not similarities:
+        return 0, "low"
+   
+    avg_similarity = sum(similarities) / len(similarities)
+   
+    if avg_similarity > 0.7:
+        return avg_similarity, "high"
+    elif avg_similarity > 0.4:
+        return avg_similarity, "medium"
+    else:
+        return avg_similarity, "low"
+
+# ============================================
+# Sidebar - Fast Loading (No Model Yet)
 # ============================================
 with st.sidebar:
     st.markdown("""
     <div style="text-align: center; padding: 20px;">
-        <h2 style="color: #4a2b7a;">✨ Dashboard</h2>
+        <h2 style="color: #4a2b7a;">✨ RAG Dashboard</h2>
     </div>
     """, unsafe_allow_html=True)
-    
-    if df is not None and st.session_state.data_loaded:
+   
+    if df is not None:
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"""
@@ -509,7 +363,7 @@ with st.sidebar:
                 <p style="margin:0;">Total Offices</p>
             </div>
             """, unsafe_allow_html=True)
-        
+       
         with col2:
             countries = df['Country'].nunique() if 'Country' in df.columns else 0
             st.markdown(f"""
@@ -519,9 +373,9 @@ with st.sidebar:
                 <p style="margin:0;">Countries</p>
             </div>
             """, unsafe_allow_html=True)
-        
+       
         st.markdown("---")
-        
+       
         # Filters
         st.markdown("### 🎯 Filters")
         if 'Country' in df.columns:
@@ -529,159 +383,151 @@ with st.sidebar:
             selected_country = st.selectbox("Country", countries_list, key="country_filter")
         else:
             selected_country = 'All'
-        
+       
         if 'Type' in df.columns:
             types_list = ['All'] + sorted(df['Type'].dropna().unique().tolist())
             selected_type = st.selectbox("Family Office Type", types_list, key="type_filter")
         else:
             selected_type = 'All'
-        
+       
         # Search settings
-        st.markdown("### ⚙️ Search Settings")
+        st.markdown("### ⚙️ RAG Settings")
         top_k = st.slider("Number of results", min_value=3, max_value=20, value=10, key="top_k_slider")
-        
+       
+        # RAG Status (will update after loading)
+        rag_status = st.empty()
+       
         st.markdown("---")
-        
+       
         # Search history
         if st.session_state.search_history:
             st.markdown("### 📜 Recent Searches")
             for q in st.session_state.search_history[-5:]:
-                if st.button(f"🔍 {q}", key=f"hist_{q}", use_container_width=True):
+                if st.button(f"🔍 {q[:20]}...", key=f"hist_{q}", help=q, use_container_width=True):
                     st.session_state.example_query = q
                     st.rerun()
     else:
-        st.error("❌ Dataset not loaded. Please check family_offices.csv")
+        st.error("❌ Dataset not loaded")
 
 # ============================================
 # Main Tabs
 # ============================================
-tab1, tab2, tab3 = st.tabs(["🔍 Query", "📊 Analytics", "⭐ Favorites"])
+tab1, tab2, tab3 = st.tabs(["🔍 RAG Query", "📊 Analytics", "⭐ Favorites"])
 
 # ============================================
-# Tab 1: Query Interface
+# Tab 1: RAG Query Interface
 # ============================================
 with tab1:
     # Search bar
     st.markdown("""
     <div style="background: rgba(255,255,255,0.5); padding: 30px; border-radius: 20px; margin: 20px 0;">
         <h3 style="text-align: center; color: #4a2b7a;">Ask anything about family offices</h3>
+        <p style="text-align: center; color: #6a4e8c; font-size: 0.9em;">Pure semantic search - no keyword boosting</p>
     </div>
     """, unsafe_allow_html=True)
-    
+   
     query = st.text_input(
         "",
-        placeholder="e.g., Which family offices invest in AI?",
+        placeholder="e.g., Which family offices invest in artificial intelligence?",
         key="query_input",
         label_visibility="collapsed"
     )
-    
-    st.markdown("</div>", unsafe_allow_html=True)
-    
+   
     # Example queries
     st.markdown("### 💡 Try these examples:")
     examples = [
-        "Which family offices invest in AI?",
-        "Show family offices in Europe",
-        "Recent climate tech deals",
-        "Healthcare investors with $10M+ checks",
-        "Who are decision makers in Singapore",
-        "Co-investors with Sequoia",
-        "Family offices in Germany",
-        "Contact information for VMS Group"
+        "Family offices investing in artificial intelligence",
+        "European healthcare investors",
+        "Recent climate technology deals",
+        "Decision makers in Singapore",
+        "Single family offices in Germany",
+        "Co-investors with Sequoia"
     ]
-    
-    cols = st.columns(4)
+   
+    cols = st.columns(3)
     for i, ex in enumerate(examples):
-        with cols[i % 4]:
-            if st.button(f"🔍 {ex[:15]}...", key=f"ex_{i}", help=ex, use_container_width=True):
+        with cols[i % 3]:
+            if st.button(f"🔍 {ex[:20]}...", key=f"ex_{i}", help=ex, use_container_width=True):
                 query = ex
                 st.rerun()
-    
-    # Process query
+   
+    # Process query - ONLY NOW load the model
     if query or 'example_query' in st.session_state:
         if 'example_query' in st.session_state:
             query = st.session_state['example_query']
             del st.session_state['example_query']
-        
-        # Add to search history
+       
+        # Add to history
         if query not in st.session_state.search_history:
             st.session_state.search_history.append(query)
-        
-        st.markdown("---")
-        
+       
         # Show user message
+        st.markdown("---")
         with st.chat_message("user"):
             st.markdown(f"**You:** {query}")
-        
-        # Search
-        with st.spinner("🔍 Searching..."):
-            # Try RAG first, fallback to pandas
-            rag_results = rag_search(query, top_k=top_k, country=selected_country, fo_type=selected_type)
+       
+        # LOAD RAG SYSTEM ONLY WHEN NEEDED
+        with st.spinner("🔍 Initializing RAG system..."):
+            model, collection, success = load_rag_system()
+       
+        if not success:
+            st.error("""
+            ### ❌ RAG System Not Available
             
-            if rag_results and rag_results.get('documents') and len(rag_results['documents']) > 0:
-                results = rag_results
-                search_method = "rag"
-                st.success("✅ Using RAG semantic search")
-            else:
-                results = pandas_search(query, df, country=selected_country, fo_type=selected_type)
-                search_method = "pandas"
-                st.info("📊 Using enhanced keyword search")
-        
-        # Calculate confidence
-        confidence_score, confidence_level = calculate_confidence(results, search_method)
-        
-        # Assistant response
+            Please run this command to rebuild the vector database:
+                Then refresh this page.
+            """)
+            st.stop()
+       
+        # Perform search
+        with st.spinner("🔍 Searching..."):
+            results = rag_search(
+                query, model, collection,
+                top_k=top_k,
+                country=selected_country if 'selected_country' in locals() else None,
+                fo_type=selected_type if 'selected_type' in locals() else None
+            )
+       
+        # Show results
         with st.chat_message("assistant"):
-            if results:
-                # Show confidence badge
+            if results and results.get('documents') and len(results['documents']) > 0:
+                confidence_score, confidence_level = calculate_confidence(results['distances'])
+               
                 if confidence_level == "high":
                     st.markdown(f'<span class="confidence-high">✨ High Confidence ({confidence_score:.1%})</span>', unsafe_allow_html=True)
                 elif confidence_level == "medium":
                     st.markdown(f'<span class="confidence-medium">📊 Medium Confidence ({confidence_score:.1%})</span>', unsafe_allow_html=True)
                 else:
                     st.markdown(f'<span class="confidence-low">⚠️ Low Confidence ({confidence_score:.1%})</span>', unsafe_allow_html=True)
-                
-                if search_method == "rag":
-                    st.markdown(f"### 📊 Found {len(results['documents'])} family offices")
-                    for i, (doc, metadata) in enumerate(zip(results['documents'][:7], results['metadatas'][:7])):
-                        firm_name = metadata.get('firm_name', 'Family Office')
-                        with st.expander(f"🏦 **{firm_name}**", expanded=i==0):
+               
+                st.markdown(f"### 📊 Found {len(results['documents'])} semantically relevant family offices")
+               
+                for i, (doc, metadata, dist) in enumerate(zip(
+                    results['documents'][:top_k],
+                    results['metadatas'][:top_k],
+                    results['distances'][:top_k]
+                )):
+                    similarity = 1 - (dist/2)
+                    firm_name = metadata.get('firm_name', 'Family Office') if metadata else 'Family Office'
+                   
+                    with st.expander(f"🏦 **{firm_name}** (Similarity: {similarity:.1%})", expanded=i==0):
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
                             st.markdown(doc)
-                            col1, col2 = st.columns([4, 1])
-                            with col2:
-                                if st.button("⭐ Save", key=f"fav_rag_{i}_{firm_name}"):
-                                    st.session_state.favorites.append({
-                                        'name': firm_name,
-                                        'text': doc[:200] + '...',
-                                        'query': query
-                                    })
-                                    st.success("Saved!")
-                else:
-                    st.markdown(f"### 📊 Found {len(results)} family offices")
-                    for i, result in enumerate(results[:7]):
-                        with st.expander(f"🏦 **{result['firm_name']}** (Match score: {result['score']})", expanded=i==0):
-                            col1, col2 = st.columns([4, 1])
-                            with col1:
-                                st.markdown(result['text'])
-                            with col2:
-                                st.markdown("**Quick Actions:**")
-                                if st.button("⭐ Save", key=f"fav_pandas_{i}_{result['firm_name']}"):
-                                    st.session_state.favorites.append({
-                                        'name': result['firm_name'],
-                                        'text': f"{result['firm_name']} - {result.get('contact_name', 'N/A')} ({result['country']})",
-                                        'query': query
-                                    })
-                                    st.success("Saved!")
-                                
-                                if result.get('contact_name') and result['contact_name'] != 'N/A':
-                                    st.info(f"👤 {result['contact_name']}")
-                                
-                                if result.get('contact_email') and result['contact_email'] != 'N/A':
-                                    st.caption(f"📧 {result['contact_email']}")
+                        with col2:
+                            if st.button("⭐ Save", key=f"fav_{i}_{firm_name}"):
+                                st.session_state.favorites.append({
+                                    'name': firm_name,
+                                    'text': doc[:200] + '...',
+                                    'query': query,
+                                    'similarity': similarity
+                                })
+                                st.success("Saved!")
             else:
                 st.markdown("""
                 <div class="warning-box">
-                    <strong>😕 No results found.</strong> Try different keywords or remove filters.
+                    <strong>😕 No semantically relevant results found.</strong><br>
+                    Try a different query or remove filters.
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -690,8 +536,7 @@ with tab1:
 # ============================================
 with tab2:
     st.markdown("## 📊 Dataset Analytics")
-    
-    if df is not None and st.session_state.data_loaded:
+    if df is not None:
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.markdown(f"""
@@ -701,7 +546,6 @@ with tab2:
                 <p>Total Offices</p>
             </div>
             """, unsafe_allow_html=True)
-        
         with col2:
             verified = df['Verified Method'].notna().sum() if 'Verified Method' in df.columns else 0
             st.markdown(f"""
@@ -711,7 +555,6 @@ with tab2:
                 <p>Verified</p>
             </div>
             """, unsafe_allow_html=True)
-        
         with col3:
             if 'Check Size Max' in df.columns:
                 df['Check Size Max'] = pd.to_numeric(df['Check Size Max'], errors='coerce')
@@ -725,7 +568,6 @@ with tab2:
                     <p>Avg Max Check</p>
                 </div>
                 """, unsafe_allow_html=True)
-        
         with col4:
             if 'AUM Range' in df.columns:
                 aum_count = df['AUM Range'].notna().sum()
@@ -736,33 +578,24 @@ with tab2:
                     <p>With AUM Data</p>
                 </div>
                 """, unsafe_allow_html=True)
-        
+       
         st.markdown("---")
-        
-        # Charts
+       
         col1, col2 = st.columns(2)
-        
         with col1:
             if 'Country' in df.columns:
-                st.markdown("### 🌍 Top Countries")
+                st.markdown("### 🌍 Geographic Distribution")
                 country_counts = df['Country'].value_counts().head(10)
                 fig = px.bar(
                     x=country_counts.values,
                     y=country_counts.index,
                     orientation='h',
-                    title="Number of Family Offices by Country",
                     color=country_counts.values,
                     color_continuous_scale=['#e6d5ff', '#8a2be2']
                 )
-                fig.update_layout(
-                    height=400,
-                    xaxis_title="Count",
-                    yaxis_title="",
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)'
-                )
+                fig.update_layout(height=400)
                 st.plotly_chart(fig, use_container_width=True)
-        
+       
         with col2:
             if 'Type' in df.columns:
                 st.markdown("### 🏛️ Office Type")
@@ -770,61 +603,38 @@ with tab2:
                 fig = px.pie(
                     values=type_counts.values,
                     names=type_counts.index,
-                    title="SFO vs MFO Distribution",
-                    color_discrete_sequence=['#8a2be2', '#b16eff', '#d9b0ff']
+                    color_discrete_sequence=['#8a2be2', '#b16eff']
                 )
                 fig.update_layout(height=400)
                 st.plotly_chart(fig, use_container_width=True)
-        
-        # Investment Focus Analysis
-        if 'Investment Focus' in df.columns:
-            st.markdown("### 🎯 Top Investment Focus Areas")
-            all_focuses = []
-            for focus in df['Investment Focus'].dropna():
-                if pd.isna(focus):
-                    continue
-                for f in str(focus).split(','):
-                    all_focuses.append(f.strip())
-            
-            if all_focuses:
-                focus_counts = pd.Series(all_focuses).value_counts().head(15)
-                fig = px.bar(
-                    x=focus_counts.values,
-                    y=focus_counts.index,
-                    orientation='h',
-                    title="Most Common Investment Focus Areas",
-                    color=focus_counts.values,
-                    color_continuous_scale=['#e6d5ff', '#8a2be2']
-                )
-                fig.update_layout(height=500)
-                st.plotly_chart(fig, use_container_width=True)
     else:
-        st.error("❌ Dataset not available for analytics")
+        st.error("❌ Dataset not available")
 
 # ============================================
 # Tab 3: Favorites
 # ============================================
 with tab3:
     st.markdown("## ⭐ Saved Family Offices")
-    
     if st.session_state.favorites:
         for i, fav in enumerate(st.session_state.favorites):
-            with st.container():
-                st.markdown(f"""
-                <div class="result-card">
-                    <h3>🏦 {fav['name']}</h3>
-                    <p>{fav['text']}</p>
-                    <p style="color: #6a4e8c;">Query: {fav.get('query', 'Saved manually')}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                if st.button("Remove", key=f"remove_{i}"):
-                    st.session_state.favorites.pop(i)
-                    st.rerun()
+            similarity = fav.get('similarity', 0)
+            st.markdown(f"""
+            <div class="result-card">
+                <h3>🏦 {fav['name']}</h3>
+                <p>{fav['text']}</p>
+                <p style="color: #6a4e8c;">Query: {fav.get('query', 'Saved manually')}</p>
+                <p style="color: #6a4e8c;">Similarity: {similarity:.1%}</p>
+            </div>
+            """, unsafe_allow_html=True)
+           
+            if st.button("Remove", key=f"remove_{i}"):
+                st.session_state.favorites.pop(i)
+                st.rerun()
     else:
         st.markdown("""
         <div style="text-align: center; padding: 50px;">
             <h1 style="font-size: 4em;">⭐</h1>
-            <p style="color: #4a2b7a;">No favorites yet. Click the star icon on search results to save them here.</p>
+            <p style="color: #4a2b7a;">No favorites yet.</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -833,7 +643,7 @@ with tab3:
 # ============================================
 st.markdown("""
 <div class="footer">
-    <p>Powered by ChromaDB + Sentence Transformers | Fallback: Enhanced Keyword Search</p>
-    <p style="font-size: 0.8em;">388 family offices • 27 data points • Updated March 2026</p>
+    <p>🔍 <strong>Pure RAG</strong> • Model loads only when you search</p>
+    <p style="font-size: 0.8em;">388 family offices • 27 data points</p>
 </div>
 """, unsafe_allow_html=True)
